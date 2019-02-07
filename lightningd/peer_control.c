@@ -713,6 +713,137 @@ static void json_add_htlcs(struct lightningd *ld,
 	json_array_end(response);
 }
 
+static void json_add_channel(struct lightningd *ld,
+			     struct json_stream *response, const char *key,
+			     const struct channel *channel)
+{
+	struct channel_id cid;
+	struct channel_stats channel_stats;
+	struct peer *p = channel->peer;
+
+	u64 our_reserve_msat =
+	    channel->channel_info.their_config.channel_reserve_satoshis * 1000;
+	json_object_start(response, key);
+	json_add_string(response, "state", channel_state_name(channel));
+	if (channel->last_tx) {
+		struct bitcoin_txid txid;
+		bitcoin_txid(channel->last_tx, &txid);
+
+		json_add_txid(response, "scratch_txid", &txid);
+	}
+	if (channel->owner)
+		json_add_string(response, "owner", channel->owner->name);
+
+	if (channel->scid) {
+		json_add_short_channel_id(response, "short_channel_id",
+					  channel->scid);
+		json_add_num(response, "direction",
+			     pubkey_idx(&ld->id, &channel->peer->id));
+	}
+
+	derive_channel_id(&cid, &channel->funding_txid,
+			  channel->funding_outnum);
+	json_add_string(response, "channel_id",
+			type_to_string(tmpctx, struct channel_id, &cid));
+	json_add_txid(response, "funding_txid", &channel->funding_txid);
+	json_add_bool(
+	    response, "private",
+	    !(channel->channel_flags & CHANNEL_FLAGS_ANNOUNCE_CHANNEL));
+
+	// FIXME @conscott : Modify this when dual-funded channels
+	// are implemented
+	json_object_start(response, "funding_allocation_msat");
+	if (channel->funder == LOCAL) {
+		json_add_u64(response, pubkey_to_hexstr(tmpctx, &p->id), 0);
+		json_add_u64(response, pubkey_to_hexstr(tmpctx, &ld->id),
+			     channel->funding_satoshi * 1000);
+	} else {
+		json_add_u64(response, pubkey_to_hexstr(tmpctx, &ld->id), 0);
+		json_add_u64(response, pubkey_to_hexstr(tmpctx, &p->id),
+			     channel->funding_satoshi * 1000);
+	}
+	json_object_end(response);
+
+	json_add_u64(response, "msatoshi_to_us", channel->our_msatoshi);
+	json_add_u64(response, "msatoshi_to_us_min",
+		     channel->msatoshi_to_us_min);
+	json_add_u64(response, "msatoshi_to_us_max",
+		     channel->msatoshi_to_us_max);
+	json_add_u64(response, "msatoshi_total",
+		     channel->funding_satoshi * 1000);
+
+	/* channel config */
+	json_add_u64(response, "dust_limit_satoshis",
+		     channel->our_config.dust_limit_satoshis);
+	json_add_u64(response, "max_htlc_value_in_flight_msat",
+		     channel->our_config.max_htlc_value_in_flight_msat);
+
+	/* The `channel_reserve_satoshis` is imposed on
+	 * the *other* side (see `channel_reserve_msat`
+	 * function in, it uses `!side` to flip sides).
+	 * So our configuration `channel_reserve_satoshis`
+	 * is imposed on their side, while their
+	 * configuration `channel_reserve_satoshis` is
+	 * imposed on ours. */
+	json_add_u64(response, "their_channel_reserve_satoshis",
+		     channel->our_config.channel_reserve_satoshis);
+	json_add_u64(
+	    response, "our_channel_reserve_satoshis",
+	    channel->channel_info.their_config.channel_reserve_satoshis);
+	/* Compute how much we can send via this channel. */
+	if (channel->our_msatoshi <= our_reserve_msat)
+		json_add_u64(response, "spendable_msatoshi", 0);
+	else
+		json_add_u64(response, "spendable_msatoshi",
+			     channel->our_msatoshi - our_reserve_msat);
+	json_add_u64(response, "htlc_minimum_msat",
+		     channel->our_config.htlc_minimum_msat);
+
+	/* The `to_self_delay` is imposed on the *other*
+	 * side, so our configuration `to_self_delay` is
+	 * imposed on their side, while their configuration
+	 * `to_self_delay` is imposed on ours. */
+	json_add_num(response, "their_to_self_delay",
+		     channel->our_config.to_self_delay);
+	json_add_num(response, "our_to_self_delay",
+		     channel->channel_info.their_config.to_self_delay);
+	json_add_num(response, "max_accepted_htlcs",
+		     channel->our_config.max_accepted_htlcs);
+
+	json_array_start(response, "status");
+	for (size_t i = 0; i < ARRAY_SIZE(channel->billboard.permanent); i++) {
+		if (!channel->billboard.permanent[i])
+			continue;
+		json_add_string(response, NULL,
+				channel->billboard.permanent[i]);
+	}
+	if (channel->billboard.transient)
+		json_add_string(response, NULL, channel->billboard.transient);
+	json_array_end(response);
+
+	/* Provide channel statistics */
+	wallet_channel_stats_load(ld->wallet, channel->dbid, &channel_stats);
+	json_add_u64(response, "in_payments_offered",
+		     channel_stats.in_payments_offered);
+	json_add_u64(response, "in_msatoshi_offered",
+		     channel_stats.in_msatoshi_offered);
+	json_add_u64(response, "in_payments_fulfilled",
+		     channel_stats.in_payments_fulfilled);
+	json_add_u64(response, "in_msatoshi_fulfilled",
+		     channel_stats.in_msatoshi_fulfilled);
+	json_add_u64(response, "out_payments_offered",
+		     channel_stats.out_payments_offered);
+	json_add_u64(response, "out_msatoshi_offered",
+		     channel_stats.out_msatoshi_offered);
+	json_add_u64(response, "out_payments_fulfilled",
+		     channel_stats.out_payments_fulfilled);
+	json_add_u64(response, "out_msatoshi_fulfilled",
+		     channel_stats.out_msatoshi_fulfilled);
+
+	json_add_htlcs(ld, response, channel);
+	json_object_end(response);
+}
+
 static void json_add_peer(struct lightningd *ld,
 			  struct json_stream *response,
 			  struct peer *p,
@@ -758,138 +889,8 @@ static void json_add_peer(struct lightningd *ld,
 	json_array_start(response, "channels");
 	json_add_uncommitted_channel(response, p->uncommitted_channel);
 
-	list_for_each(&p->channels, channel, list) {
-		struct channel_id cid;
-		struct channel_stats channel_stats;
-		u64 our_reserve_msat = channel->channel_info.their_config.channel_reserve_satoshis * 1000;
-		json_object_start(response, NULL);
-		json_add_string(response, "state",
-				channel_state_name(channel));
-		if (channel->last_tx) {
-			struct bitcoin_txid txid;
-			bitcoin_txid(channel->last_tx, &txid);
-
-			json_add_txid(response, "scratch_txid", &txid);
-		}
-		if (channel->owner)
-			json_add_string(response, "owner",
-					channel->owner->name);
-		if (channel->scid) {
-			json_add_short_channel_id(response,
-						  "short_channel_id",
-						  channel->scid);
-			json_add_num(response, "direction",
-				     pubkey_idx(&ld->id, &p->id));
-		}
-		derive_channel_id(&cid,
-				  &channel->funding_txid,
-				  channel->funding_outnum);
-		json_add_string(response, "channel_id",
-				type_to_string(tmpctx, struct channel_id, &cid));
-		json_add_txid(response,
-			      "funding_txid",
-			      &channel->funding_txid);
-		json_add_bool(response, "private",
-				!(channel->channel_flags & CHANNEL_FLAGS_ANNOUNCE_CHANNEL));
-
-		// FIXME @conscott : Modify this when dual-funded channels
-		// are implemented
-		json_object_start(response, "funding_allocation_msat");
-		if (channel->funder == LOCAL) {
-			json_add_u64(response, pubkey_to_hexstr(tmpctx, &p->id), 0);
-			json_add_u64(response, pubkey_to_hexstr(tmpctx, &ld->id),
-					channel->funding_satoshi * 1000);
-		} else {
-			json_add_u64(response, pubkey_to_hexstr(tmpctx, &ld->id), 0);
-			json_add_u64(response, pubkey_to_hexstr(tmpctx, &p->id),
-					channel->funding_satoshi * 1000);
-		}
-		json_object_end(response);
-
-		json_add_u64(response, "msatoshi_to_us",
-			     channel->our_msatoshi);
-		json_add_u64(response, "msatoshi_to_us_min",
-			     channel->msatoshi_to_us_min);
-		json_add_u64(response, "msatoshi_to_us_max",
-			     channel->msatoshi_to_us_max);
-		json_add_u64(response, "msatoshi_total",
-			     channel->funding_satoshi * 1000);
-
-		/* channel config */
-		json_add_u64(response, "dust_limit_satoshis",
-			     channel->our_config.dust_limit_satoshis);
-		json_add_u64(response, "max_htlc_value_in_flight_msat",
-			     channel->our_config.max_htlc_value_in_flight_msat);
-
-		/* The `channel_reserve_satoshis` is imposed on
-		 * the *other* side (see `channel_reserve_msat`
-		 * function in, it uses `!side` to flip sides).
-		 * So our configuration `channel_reserve_satoshis`
-		 * is imposed on their side, while their
-		 * configuration `channel_reserve_satoshis` is
-		 * imposed on ours. */
-		json_add_u64(response, "their_channel_reserve_satoshis",
-			     channel->our_config.channel_reserve_satoshis);
-		json_add_u64(response, "our_channel_reserve_satoshis",
-			     channel->channel_info.their_config.channel_reserve_satoshis);
-		/* Compute how much we can send via this channel. */
-		if (channel->our_msatoshi <= our_reserve_msat)
-			json_add_u64(response, "spendable_msatoshi", 0);
-		else
-			json_add_u64(response, "spendable_msatoshi",
-				     channel->our_msatoshi - our_reserve_msat);
-		json_add_u64(response, "htlc_minimum_msat",
-			     channel->our_config.htlc_minimum_msat);
-
-		/* The `to_self_delay` is imposed on the *other*
-		 * side, so our configuration `to_self_delay` is
-		 * imposed on their side, while their configuration
-		 * `to_self_delay` is imposed on ours. */
-		json_add_num(response, "their_to_self_delay",
-			     channel->our_config.to_self_delay);
-		json_add_num(response, "our_to_self_delay",
-			     channel->channel_info.their_config.to_self_delay);
-		json_add_num(response, "max_accepted_htlcs",
-			     channel->our_config.max_accepted_htlcs);
-
-		json_array_start(response, "status");
-		for (size_t i = 0;
-		     i < ARRAY_SIZE(channel->billboard.permanent);
-		     i++) {
-			if (!channel->billboard.permanent[i])
-				continue;
-			json_add_string(response, NULL,
-					channel->billboard.permanent[i]);
-		}
-		if (channel->billboard.transient)
-			json_add_string(response, NULL,
-					channel->billboard.transient);
-		json_array_end(response);
-
-		/* Provide channel statistics */
-		wallet_channel_stats_load(ld->wallet,
-					  channel->dbid,
-					  &channel_stats);
-		json_add_u64(response, "in_payments_offered",
-			     channel_stats.in_payments_offered);
-		json_add_u64(response, "in_msatoshi_offered",
-			     channel_stats.in_msatoshi_offered);
-		json_add_u64(response, "in_payments_fulfilled",
-			     channel_stats.in_payments_fulfilled);
-		json_add_u64(response, "in_msatoshi_fulfilled",
-			     channel_stats.in_msatoshi_fulfilled);
-		json_add_u64(response, "out_payments_offered",
-			     channel_stats.out_payments_offered);
-		json_add_u64(response, "out_msatoshi_offered",
-			     channel_stats.out_msatoshi_offered);
-		json_add_u64(response, "out_payments_fulfilled",
-			     channel_stats.out_payments_fulfilled);
-		json_add_u64(response, "out_msatoshi_fulfilled",
-			     channel_stats.out_msatoshi_fulfilled);
-
-		json_add_htlcs(ld, response, channel);
-		json_object_end(response);
-	}
+	list_for_each(&p->channels, channel, list)
+		json_add_channel(ld, response, NULL, channel);
 	json_array_end(response);
 
 	if (ll)
