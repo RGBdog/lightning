@@ -621,10 +621,10 @@ class LightningNode(object):
             try:
                 self.rpc.getroute(destination.info['id'], 1, 1)
                 return True
-            except:
+            except Exception:
                 time.sleep(1)
         if time.time() > start_time + timeout:
-            raise ValueError("Error waiting for {}", success)
+            raise ValueError("Error waiting for a route to destination {}".format(destination))
 
     def pay(self, dst, amt, label=None):
         if not label:
