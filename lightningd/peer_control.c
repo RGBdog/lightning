@@ -626,8 +626,12 @@ peer_connected_serialize(struct peer_connected_hook_payload *payload,
 	    type_to_string(stream, struct wireaddr_internal, &payload->addr));
 	json_add_hex_talarr(stream, "globalfeatures", p->globalfeatures);
 
-	json_add_channel(payload->ld, stream, "channel", channel);
-	json_object_end(stream);
+	if (channel != NULL) {
+		json_add_channel(payload->ld, stream, "channel", channel);
+	} else {
+		json_add_null(stream, "channel");
+	}
+	json_object_end(stream); /* .peer */
 }
 
 static struct peer_connected_hook_response *
