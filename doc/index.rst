@@ -1,11 +1,8 @@
 c-lightning Documentation
 =========================
 
-User Documentation
-------------------
-
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: User Documentation
 
    INSTALL.md
